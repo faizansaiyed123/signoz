@@ -1,6 +1,8 @@
 package implrawdataexport
 
 import (
+	"io"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
@@ -194,4 +196,56 @@ func TestConstructCSVRecordFromQueryResponse(t *testing.T) {
 	assert.Equal(t, "test message", record[1])
 	assert.Equal(t, "INFO", record[2])
 	assert.Equal(t, "test-id", record[3])
+}
+
+
+type failingResponseWriter struct {
+	*httptest.ResponseRecorder
+}
+
+func (w failingResponseWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func TestExecuteExportCSVFlush(t *testing.T) {
+	newRows := func() <-chan *qbtypes.RawRow {
+		rows := make(chan *qbtypes.RawRow, 1)
+		rows <- &qbtypes.RawRow{Data: map[string]any{"body": "hello"}}
+		close(rows)
+		return rows
+	}
+
+	t.Run("explicit csv format succeeds", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		complete, err := (&handler{}).executeExport(newRows(), nil, "csv", recorder)
+
+		assert.NoError(t, err)
+		assert.True(t, complete)
+		assert.Equal(t, "body\nhello\n", recorder.Body.String())
+	})
+
+	t.Run("default format succeeds", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		complete, err := (&handler{}).executeExport(newRows(), nil, "", recorder)
+
+		assert.NoError(t, err)
+		assert.True(t, complete)
+		assert.Equal(t, "body\nhello\n", recorder.Body.String())
+	})
+
+	t.Run("explicit csv format returns flush error", func(t *testing.T) {
+		writer := failingResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+		complete, err := (&handler{}).executeExport(newRows(), nil, "csv", writer)
+
+		assert.False(t, complete)
+		assert.ErrorIs(t, err, io.ErrClosedPipe)
+	})
+
+	t.Run("default format returns flush error", func(t *testing.T) {
+		writer := failingResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+		complete, err := (&handler{}).executeExport(newRows(), nil, "", writer)
+
+		assert.False(t, complete)
+		assert.ErrorIs(t, err, io.ErrClosedPipe)
+	})
 }
